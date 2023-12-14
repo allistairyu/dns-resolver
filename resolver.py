@@ -1,4 +1,3 @@
-import sys
 import dns.message
 import dns.query
 import socket
@@ -19,10 +18,13 @@ class TTLItemCache(TTLCache):
                 link.expires += ttl - self.ttl
 
 
-root_server = '198.41.0.4'
+root_servers = ['198.41.0.4', '170.247.170.2', '192.33.4.12', '199.7.91.13', 
+				'192.203.230.10', '192.5.5.241', '192.112.36.4', '198.97.190.53',
+				'192.36.148.17', '192.58.128.30', '193.0.14.129','199.7.83.42',
+				'202.12.27.33']
 
 
-def main(query_type='recursive', verbose=False):
+def main(query_type, verbose):
 	cache = TTLItemCache(maxsize=4096, ttl=100)
 	dns_servers = loadDNSServers()
 	while True:
@@ -87,14 +89,16 @@ def iterativeQuery(domain, cache):
 
 	query = createDNSPacket(domain)
 	# start with root server
-	addr = root_server
+	addr = root_servers[0]
+	index = 1
 	port = 53
 	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
 	tries = 0
 	path = []
-	while tries < 20:
+	while tries < 50:
 		try:
 			sock.sendto(query, (str(addr), port))
+			sock.settimeout(3)
 			responseBytes, sender = sock.recvfrom(1024)
 			path.append(sender[0])
 			response = dns.message.from_wire(responseBytes)
@@ -102,17 +106,24 @@ def iterativeQuery(domain, cache):
 				# get first ipv4 address. better solution?
 				for a in response.additional:
 					if a.rdtype == 1:
-						addr = a[0]
+						addr = a[0].address
 						break
+					
 				else:
-					return "Unable to find domain", False, []
+					addr = root_servers[index]
+					path = []
+					print('going to next root server')
+					index += 1
 			else:
 				answer = response.answer[0]
 				cache.__setitem__(domain, answer, ttl=answer.ttl)
 				return answer, False, path
 			tries += 1
+		except socket.timeout:
+			addr = root_servers[index]
+			path = []
+			index += 1
 		except Exception as e:
-			print(e)
 			break
 	
 	sock.close()
@@ -144,6 +155,10 @@ if __name__ == "__main__":
 	parser.add_argument('--verbose', action='store_true',
 						help='print additional information for each query.')	
 	args = parser.parse_args()
-	if args.method not in ('recursive', 'iterative'):
-		raise ValueError('Invalid query type. Must be recursive or iterative.')
-	main(args.method, args.verbose)
+	method = args.method
+	if method:
+		if args.method not in ('recursive', 'iterative'):
+			parser.error('Invalid query type. Must be recursive or iterative.')
+	else:
+		method = 'recursive'
+	main(method, args.verbose)
