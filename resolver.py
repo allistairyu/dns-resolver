@@ -24,35 +24,65 @@ root_servers = ['198.41.0.4', '170.247.170.2', '192.33.4.12', '199.7.91.13',
 				'202.12.27.33']
 cache = TTLItemCache(maxsize=4096, ttl=100)
 
+rdtypes = {"A" : 1, "AAAA": 28, "TXT": 16, "ANY" : 0}
+
+global verb
+verb = True
 def main(query_type, verbose):
+	global verb
+	verb = verbose
 	dns_servers = loadDNSServers()
 	while True:
-		domain = input('Enter a domain name to query: ')
+		# parse input
+		query = input('Enter a <domain name> [record type] to query (\'q\' to quit): ')
+		if query == "q":
+			return
+		elif query == "":
+			continue
+		tokens = query.split(' ')
+		domain = tokens[0]
+		rd = "A"
+		if len(tokens) > 1:
+			rd = tokens[1]
+		if rd not in rdtypes:
+			print("Not a valid record type: must be one of \"A\", \"AAAA\", \"TXT\" (or \"ANY\" to get all).")
+			continue
+		
 		print('Querying for ' + domain + '...')
-		start = time.time()
+		to_query = [rd] # list of types to query, mainly for ANY option
 		cached = False
-		if query_type == 'recursive':
-			answer, cached = recursiveQuery(domain, dns_servers)
-			print(answer)
-		elif query_type == 'iterative':
-			answer, cached, path = iterativeQuery(domain)
-			print(answer)
+		if rd == "ANY":
+			to_query = ["A", "AAAA", "TXT"]
+		msg = False
+		for idx in to_query:
+			start = time.time()
+			if query_type == 'recursive':
+				answer, cached = recursiveQuery(domain, dns_servers, idx)
+			elif query_type == 'iterative':
+				answer, cached, path = iterativeQuery(domain, idx)
+			if rd != "ANY" or answer != "Unable to find domain":
+				print(answer)
+				msg = True
+			end = time.time()
+			if verbose and answer != 'Unable to find domain': # if ANY, don't print if not found; do at end
+				net = "%.3f" % (100 * (end - start))
+				print('-----------------------------------------------------------')
+				# print('{:>12}  {:<45}'.format('Time (ms): ', str(100 * (end - start))))
+				print('{:>12}  {:<45}'.format('Time (ms): ', net))
+				print('{:>12}  {:<45}'.format('Cached? ', str(cached)))
+				if query_type == 'iterative':
+					print('{:>12}  {:<65}'.format('Path: ', ' --> '.join(path)))
+				print('-----------------------------------------------------------')
+		if rd == "ANY" and not msg: # in the case that ANY doesn't find anything, indicating domain not found (but these msgs weren't printed before)
+			print("Unable to find domain")
 
-		end = time.time()
-		if verbose and answer != 'Unable to find domain':
-			print('-----------------------------------------------------------')
-			print('{:>12}  {:<45}'.format('Time (ms): ', str(100 * (end - start))))
-			print('{:>12}  {:<45}'.format('Cached? ', str(cached)))
-			if query_type == 'iterative':
-				print('{:>12}  {:<65}'.format('Path: ', ' --> '.join(path)))
-			print('-----------------------------------------------------------')
 
-
-def recursiveQuery(domain, dns_servers):
-	if domain in cache:
-		return cache[domain], True
+def recursiveQuery(domain, dns_servers, rdtype):
+	cache_domain = str(domain) + " " + rdtype
+	if cache_domain in cache:
+		return cache[cache_domain], True
 	
-	query = createDNSPacket(domain)
+	query = createDNSPacket(domain, rdtype)
 	port = 53
 
 	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
@@ -73,20 +103,22 @@ def recursiveQuery(domain, dns_servers):
 			response = dns.message.from_wire(response)
 			sock.close()
 			answer = response.answer[0]
-			cache.__setitem__(domain, answer, ttl=answer.ttl)
+			cache.__setitem__(cache_domain, answer, ttl=answer.ttl)
 			return answer, False
 		except socket.timeout:
-			print('timed out. trying another dns server...')
+			global verb
+			if verb:
+				print('timed out. trying another dns server...')
 		except IndexError:
 			break
 	return "Unable to find domain", False
 
 
-def iterativeQuery(domain):
-	if domain in cache:
-		return cache[domain], True, []
-
-	query = createDNSPacket(domain)
+def iterativeQuery(domain, rdtype):
+	cache_domain = str(domain) + " " + rdtype
+	if cache_domain in cache:
+		return cache[cache_domain], True, []
+	query = createDNSPacket(domain, rdtype)
 
 	# start with root server
 	addr = root_servers[0]
@@ -109,11 +141,11 @@ def iterativeQuery(domain):
 						addr = a[0].address
 						break
 				else: # check authority section for name servers
-					if len(response.authority[0]) > 0:
+					if len(response.authority) > 0 and len(response.authority[0]) > 0:
 						next_domain = response.authority[0][0]
-						answer, _, path = iterativeQuery(next_domain)
+						answer, _, path = iterativeQuery(next_domain, rdtype)
 						if answer != 'Unable to find domain':
-							cache.__setitem__(domain, answer, ttl=answer.ttl)
+							cache.__setitem__(cache_domain, answer, ttl=answer.ttl)
 						sock.close()
 						return answer, False, path
 					else: 
@@ -121,9 +153,11 @@ def iterativeQuery(domain):
 						path = []
 						index += 1
 						depth = 0
+						if index == len(root_servers): 
+							depth = 8
 			else:
 				answer = response.answer[0]
-				cache.__setitem__(domain, answer, ttl=answer.ttl)
+				cache.__setitem__(cache_domain, answer, ttl=answer.ttl)
 				sock.close()
 				return answer, False, path
 			depth += 1
@@ -132,6 +166,8 @@ def iterativeQuery(domain):
 			path = []
 			index += 1
 			depth = 0
+			if index == len(root_servers):
+				depth = 8
 		except Exception as e:
 			print(e)
 			break
@@ -139,8 +175,8 @@ def iterativeQuery(domain):
 	sock.close()
 	return "Unable to find domain", False, []
 
-def createDNSPacket(query):
-	query_message = dns.message.make_query(query, 1) # 1 for record type A
+def createDNSPacket(query, rdtype="A"):
+	query_message = dns.message.make_query(query, rdtypes[rdtype]) # 1 for record type A
 	return query_message.to_wire()
 	
 def loadDNSServers():
