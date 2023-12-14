@@ -22,10 +22,9 @@ root_servers = ['198.41.0.4', '170.247.170.2', '192.33.4.12', '199.7.91.13',
 				'192.203.230.10', '192.5.5.241', '192.112.36.4', '198.97.190.53',
 				'192.36.148.17', '192.58.128.30', '193.0.14.129','199.7.83.42',
 				'202.12.27.33']
-
+cache = TTLItemCache(maxsize=4096, ttl=100)
 
 def main(query_type, verbose):
-	cache = TTLItemCache(maxsize=4096, ttl=100)
 	dns_servers = loadDNSServers()
 	while True:
 		domain = input('Enter a domain name to query: ')
@@ -33,10 +32,10 @@ def main(query_type, verbose):
 		start = time.time()
 		cached = False
 		if query_type == 'recursive':
-			answer, cached = recursiveQuery(domain, cache, dns_servers)
+			answer, cached = recursiveQuery(domain, dns_servers)
 			print(answer)
 		elif query_type == 'iterative':
-			answer, cached, path = iterativeQuery(domain, cache)
+			answer, cached, path = iterativeQuery(domain)
 			print(answer)
 
 		end = time.time()
@@ -49,7 +48,7 @@ def main(query_type, verbose):
 			print('-----------------------------------------------------------')
 
 
-def recursiveQuery(domain, cache, dns_servers):
+def recursiveQuery(domain, dns_servers):
 	if domain in cache:
 		return cache[domain], True
 	
@@ -83,19 +82,20 @@ def recursiveQuery(domain, cache, dns_servers):
 	return "Unable to find domain", False
 
 
-def iterativeQuery(domain, cache):
+def iterativeQuery(domain):
 	if domain in cache:
 		return cache[domain], True, []
 
 	query = createDNSPacket(domain)
+
 	# start with root server
 	addr = root_servers[0]
 	index = 1
 	port = 53
 	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
-	tries = 0
+	depth = 0
 	path = []
-	while tries < 50:
+	while depth < 8:
 		try:
 			sock.sendto(query, (str(addr), port))
 			sock.settimeout(3)
@@ -108,22 +108,32 @@ def iterativeQuery(domain, cache):
 					if a.rdtype == 1:
 						addr = a[0].address
 						break
-					
-				else:
-					addr = root_servers[index]
-					path = []
-					print('going to next root server')
-					index += 1
+				else: # check authority section for name servers
+					if len(response.authority[0]) > 0:
+						next_domain = response.authority[0][0]
+						answer, _, path = iterativeQuery(next_domain)
+						if answer != 'Unable to find domain':
+							cache.__setitem__(domain, answer, ttl=answer.ttl)
+						sock.close()
+						return answer, False, path
+					else: 
+						addr = root_servers[index]
+						path = []
+						index += 1
+						depth = 0
 			else:
 				answer = response.answer[0]
 				cache.__setitem__(domain, answer, ttl=answer.ttl)
+				sock.close()
 				return answer, False, path
-			tries += 1
+			depth += 1
 		except socket.timeout:
 			addr = root_servers[index]
 			path = []
 			index += 1
+			depth = 0
 		except Exception as e:
+			print(e)
 			break
 	
 	sock.close()
