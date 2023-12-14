@@ -214,15 +214,10 @@ def loadDNSServers():
 
 if __name__ == "__main__":
 	parser = argparse.ArgumentParser(description='DNS resolver that supports iterative and recursive queries')
-	parser.add_argument('--method', type=str,
-						help='recursive/iterative. default is recursive.')
+	parser.add_argument('--iterative', action='store_true',
+						help='enables iterative querying (default method is recursive).')
 	parser.add_argument('--verbose', action='store_true',
 						help='print additional information for each query.')	
 	args = parser.parse_args()
-	method = args.method
-	if method:
-		if args.method not in ('recursive', 'iterative'):
-			parser.error('Invalid query type. Must be recursive or iterative.')
-	else:
-		method = 'recursive'
+	method = 'iterative' if args.iterative else 'recursive'
 	main(method, args.verbose)
