@@ -3,10 +3,10 @@ import dns.query
 import socket
 from cachetools import Cache, TTLCache
 import csv
-import random
 from ipaddress import ip_address, IPv4Address 
 import time
 import argparse
+import threading
 
 # https://stackoverflow.com/questions/53405470/python-cachetools-can-items-have-different-ttl
 class TTLItemCache(TTLCache):
@@ -17,20 +17,22 @@ class TTLItemCache(TTLCache):
             if link:
                 link.expires += ttl - self.ttl
 
+# https://stackoverflow.com/questions/10525185/python-threading-how-do-i-lock-a-thread
+class Thread(threading.Thread):
+    def __init__(self, t, *args):
+        threading.Thread.__init__(self, target=t, args=args)
+        self.start()
+lock = threading.Lock()
 
 root_servers = ['198.41.0.4', '170.247.170.2', '192.33.4.12', '199.7.91.13', 
 				'192.203.230.10', '192.5.5.241', '192.112.36.4', '198.97.190.53',
 				'192.36.148.17', '192.58.128.30', '193.0.14.129','199.7.83.42',
 				'202.12.27.33']
 cache = TTLItemCache(maxsize=4096, ttl=100)
-
 rdtypes = {"A" : 1, "AAAA": 28, "TXT": 16, "ANY" : 0}
 
-global verb
-verb = True
+
 def main(query_type, verbose):
-	global verb
-	verb = verbose
 	dns_servers = loadDNSServers()
 	while True:
 		# parse input
@@ -65,9 +67,8 @@ def main(query_type, verbose):
 				msg = True
 			end = time.time()
 			if verbose and answer != 'Unable to find domain': # if ANY, don't print if not found; do at end
-				net = "%.3f" % (100 * (end - start))
+				net = "%.3f" % (1000 * (end - start))
 				print('-----------------------------------------------------------')
-				# print('{:>12}  {:<45}'.format('Time (ms): ', str(100 * (end - start))))
 				print('{:>12}  {:<45}'.format('Time (ms): ', net))
 				print('{:>12}  {:<45}'.format('Cached? ', str(cached)))
 				if query_type == 'iterative':
@@ -76,42 +77,59 @@ def main(query_type, verbose):
 		if rd == "ANY" and not msg: # in the case that ANY doesn't find anything, indicating domain not found (but these msgs weren't printed before)
 			print("Unable to find domain")
 
-
-def recursiveQuery(domain, dns_servers, rdtype):
-	cache_domain = str(domain) + " " + rdtype
+def queryCache(cache_domain): # given cache key returns value, if it exists
 	if cache_domain in cache:
 		return cache[cache_domain], True
+	else:
+		return None, False
+
+def dnsServerThread(query, sock, addr, cache_key, event): # thread for querying from server
+	port = 53
+	if type(ip_address(addr)) is not IPv4Address:
+		return
+	try:
+		sock.sendto(query, (addr, port))
+		sock.settimeout(3)
+		response = sock.recv(1024)
+		response = dns.message.from_wire(response)
+		sock.close()
+		lock.acquire()
+		try: 
+			if not event.is_set(): # no answer has been found yet, set it in cache
+				answer = response.answer[0]
+				cache.__setitem__(cache_key, answer, ttl=answer.ttl)
+				event.set()
+				return
+			else:
+				lock.release()
+				return
+		finally:
+			lock.release()
+	finally:
+		return
+
+def recursiveQuery(domain, dns_servers, rdtype):
+	event = threading.Event()
+	cache_domain = str(domain) + " " + rdtype
+	cache_ans, cached = queryCache(cache_domain)
+	if cached: # already cached, just return
+		return cache_ans, True
 	
 	query = createDNSPacket(domain, rdtype)
-	port = 53
 
-	sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
+	r = list(range(len(dns_servers)))
 
-	# pick a public nameserver to query (random? idk)
-	r = list(range(50))
-	random.shuffle(r)
-	# TODO: how many servers should we check? also implement
-	# multithreading/processing if have time
-	for i in r:
+	thread_list = []
+	for i in r: # start the threads
 		addr = dns_servers[i]
-		if type(ip_address(addr)) is not IPv4Address:
-			continue
-		try:
-			sock.sendto(query, (addr, port))
-			sock.settimeout(3)
-			response = sock.recv(1024)
-			response = dns.message.from_wire(response)
-			sock.close()
-			answer = response.answer[0]
-			cache.__setitem__(cache_domain, answer, ttl=answer.ttl)
-			return answer, False
-		except socket.timeout:
-			global verb
-			if verb:
-				print('timed out. trying another dns server...')
-		except IndexError:
-			break
-	return "Unable to find domain", False
+		sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
+		thread_list.append(Thread(dnsServerThread, query, sock, addr, cache_domain, event))
+	
+	event.wait(timeout = 3) # wait for at most 3 sec
+	if event.is_set():
+		return cache[cache_domain], False
+	else:
+		return "Unable to find domain", False
 
 
 def iterativeQuery(domain, rdtype):
