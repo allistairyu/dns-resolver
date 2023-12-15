@@ -54,5 +54,19 @@ receive an answer, we store it in the cache with the answer's TTL and return
 the address (or "Unable to find domain") and the path taken.
 
 ## Discussion/Results
+We were able to successfully implement our goal of creating a simple DNS resolver. To test the correctness of our resolver, we used https://public-dns.info/ for several domain names to test our resolver on, and compare our result with the IP listed and check it matches.
+
+![Example domains/IPs](images/example_domain.png)
+
+![Resolver output](images/resolver_output.png)
+
+The first image shows three different domain names and the corresponding IP and the second shows our resolver taking in these domain names. The returned IP addresses are circled in red, and we can see that these match. To test the correctness of the path of the iterative method, we manually tested some domain names and checked if the given path was valid – you can see this in our demo video with google.com.
+
+The second image also shows that the querying time is fast (using the recursive method). This indicates that our multithreading works properly and the reason for any delay is purely local setup/RTT based, and not the resolver algorithm itself. In addition, the demo video shows (using Wireshark) that the packets we send are properly formatted, along with the fact that our socket properly receives, so every step in the process seems to run as intended.
+
+The bulk of this project was fairly straightforward: in particular, the dnspython library being well documented allowed us to integrate it into our project with little trouble. Aside from implementing the multithreading logic (which was mostly finding what we needed from the threading library), we also played around with some of the parameters to see which would get us the best performance. One example is the amount of time we should wait to get a response from one of our threads before deciding the domain can’t be found: if this is too long, then we are just wasting time if the domain name can’t be found, but it can’t be too short or else it might cut off a thread that eventually returns a response. Another example is varying the number of servers to query in the recursive method to ensure there isn’t a timeout with high probability, but also to minimize the number of threads actually needed.
 
 ## Conclusions/Future Work
+This project allowed us to become more familiar with how DNS resolvers work and gain some appreciation for the scale on which this happens in practice. If we had the time to continue working on this, it would be nice to allow the user to actually read the parts of the cache based on certain filters and parameters, instead of having to repeatedly query one domain name at a time. Another slight optimization would be to find the best combination of servers for the recursive method to use that would optimize performance, rather than taking a random subset of them. A final idea would be to remove our dependence on the `dnspython` library so we can make the whole process entirely ours.
+
+All in all, we are happy with what we have, especially given the limited time and finals happening this week. Working on this project (and class!) was very enjoyable, and we are glad we made the right project choice :)
