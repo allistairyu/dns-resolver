@@ -1,8 +1,11 @@
 
 ## Introduction
 Domain Name System (DNS) translates human-readable domain names into IP
-addresses. In this project, we created a simple DNS resolver using Python. We
-minimally relied on the dnspython library to serialize and deserialize queries.
+addresses. In this project, we created a simple DNS resolver using Python. Our
+fundamental goals were to support recursive and iterative querying with caching.
+We also planned to implement support for different record types and performance
+optimization with concurrent queries. We ended up minimally relying on the
+`dnspython` library to serialize and deserialize requests and responses.
 
 ## Design/Implementation
 
@@ -30,11 +33,11 @@ error message) and a boolean representing whether the result was cached.*
 If the domain is in the cache, the cached result is returned. Otherwise, we rely
 on multithreading to query multiple DNS servers. Concretely, we create a thread 
 for each DNS server passed in. Each thread runs `dnsServerThread`, which queries
-the given DNS server via a UDP socket for an answer. The first thread that 
-receives an answer acquires the lock and stores the answer in the cache with the
-TTL from the answer. The original `recursiveQuery` thread simply waits until one
-of its threads sets an answer and returns. If no threads were able to receive a
-response, "Unable to find domain" is returned.
+the given DNS server on the DNS port (53) via a UDP socket for an answer. The 
+first thread that receives an answer acquires the lock and stores the answer in
+the cache with the TTL from the answer. The original `recursiveQuery` thread
+simply waits until one of its threads sets an answer and returns. If no threads
+were able to receive a response, "Unable to find domain" is returned.
 
 #### `iterativeQuery`
 *Takes in a domain and a record type. Returns address (or error message),
@@ -46,12 +49,10 @@ iterative algorithm proceeds. The first root server is queried via a UDP socket.
 When we receive a response, if an additional section exists, we continue to
 iterate with an address from the additional section. Otherwise, we continue with
 a nameserver from the authority section. If a particular root server is not able
-to eventually resolve a domain, we try a different root server. If we do
+to eventually resolve a domain, we try a different root server. If we ultimately
 receive an answer, we store it in the cache with the answer's TTL and return
 the address (or "Unable to find domain") and the path taken.
 
 ## Discussion/Results
-
-
 
 ## Conclusions/Future Work
